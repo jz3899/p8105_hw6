@@ -1,0 +1,159 @@
+---
+title: "p8105_hw6"
+author: "Jicong Zhang"
+date: "2025-12-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(broom)
+set.seed(1)
+knitr::opts_chunk$set(
+  fig.width = 9,
+  fig.asp = .6,
+  out.width = "100%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+# Problem 1
+```{r}
+homi_df = 
+  read.csv("./homicide-data.csv",na = c("NA", ".", "")) %>%
+  janitor::clean_names()
+homi_df
+```
+
+```{r}
+dis_df = homi_df %>%
+  mutate(city_state = str_c(city, state, sep = ",")) %>%
+  select(-city) %>%
+  select(-state) %>%
+  mutate(solved = if_else(disposition == "Closed by arrest", 1, 0),
+         victim_age = as.numeric(victim_age)) %>%
+  filter(!city_state %in% c("Dallas,TX", "Phoenix,AZ", "Kansas City,MO", "Tulsa,AL")) %>%
+  filter(victim_race %in% c("White", "Black"))
+dis_df %>%
+  glimpse()
+```
+
+**After omit some cities and focus on race of white and black, there are 39693 victims that have the homicide been solved.**
+
+```{r}
+baltimore = dis_df %>%
+  filter(city_state == "Baltimore,MD")
+baltimore
+```
+
+```{r}
+bal_fit = baltimore %>%
+  glm(solved~victim_age + victim_sex + victim_race, data=., family = binomial(link="logit"))
+bal_fit %>%
+  broom::tidy(conf.int = TRUE) %>%
+  filter(term == "victim_sexMale") %>%
+  mutate(OR = exp(estimate)) %>%
+  select(term, log_estimate = OR, conf.low, conf.high) %>%
+  knitr::kable(digits = 3)
+bal_fit
+```
+
+```{r}
+nested = dis_df %>%
+  group_by(city_state) %>%
+  nest() %>%
+  mutate(
+    fit = purrr::map(data, ~ glm(
+      solved ~ victim_age + victim_sex + victim_race,
+      data = .,
+      family = binomial
+    ))
+  )
+nested
+```
+
+```{r}
+results = nested %>%
+  mutate(tidy_fit = map(fit, broom::tidy, conf.int = TRUE, exponentiate = TRUE)) %>%
+  unnest(tidy_fit) %>%
+  filter(term == "victim_sex.Male") %>%
+  select(
+    city_state,
+    OR = estimate,
+    conf.low,
+    conf.high)
+results
+```
+
+# Problem 2
+```{r}
+library(p8105.datasets)
+data("weather_df")
+form = tmax ~ tmin + prcp
+B = 5000
+
+boot_df =
+  tibble(
+    boot_id = 1:B,
+    boot_sample = map(boot_id, ~ sample_frac(weather_df, replace = TRUE))
+  ) %>%
+  mutate(
+    fit = map(boot_sample, ~ lm(form, data = .x)),
+    glance = map(fit, glance),            
+    tidy = map(fit, tidy)                 
+  ) %>%
+  mutate(
+    r2 = map_dbl(glance, "r.squared"),
+
+
+    beta_product = map_dbl(
+      tidy,
+      ~ {
+        b1 = .x %>% filter(term == "tmin") %>% pull(estimate)
+        b2 = .x %>% filter(term == "prcp") %>% pull(estimate)
+        b1 * b2
+      }
+    )
+  ) %>%
+  select(boot_id, r2, beta_product)
+```
+
+```{r}
+boot_df %>%
+  ggplot(aes(x = r2)) +
+  geom_histogram(bins = 40) +
+  theme_minimal() +
+  labs(
+    title = "Bootstrap Distribution of R-squared",
+    x = "r^2",
+    y = "Count"
+  )
+```
+
+```{r}
+boot_df %>%
+  ggplot(aes(x = beta_product)) +
+  geom_histogram(bins = 40) +
+  theme_minimal() +
+  labs(
+    title = "Bootstrap Distribution of β1β2",
+    x = "β1 × β2",
+    y = "Count"
+  )
+```
+
+```{r}
+quantile(boot_df$r2, c(0.025, 0.975))
+quantile(boot_df$beta_product, c(0.025, 0.975))
+```
+
