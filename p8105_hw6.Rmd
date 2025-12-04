@@ -12,6 +12,7 @@ library(broom)
 library(ggridges)
 library(ggplot2)
 library(modelr)
+library(mgcv)
 set.seed(1)
 knitr::opts_chunk$set(
   fig.width = 9,
@@ -63,38 +64,60 @@ bal_fit = baltimore %>%
 bal_fit %>%
   broom::tidy(conf.int = TRUE) %>%
   filter(term == "victim_sexMale") %>%
-  mutate(OR = exp(estimate)) %>%
-  select(term, log_estimate = OR, conf.low, conf.high) %>%
+  mutate(OR = exp(estimate),
+         OR_lower = exp(conf.low),
+         OR_higher = exp(conf.high)) %>%
+  select(term, log_estimate = OR, OR_lower, OR_higher) %>%
   knitr::kable(digits = 3)
 bal_fit
 ```
 
 ```{r}
-nested = dis_df %>%
-  group_by(city_state) %>%
-  nest() %>%
-  mutate(
-    fit = purrr::map(data, ~ glm(
-      solved ~ victim_age + victim_sex + victim_race,
-      data = .,
-      family = binomial
-    ))
-  )
-nested
+fit_logistic = dis_df %>% 
+  select(city_state, solved, victim_age, victim_race, victim_sex) %>% 
+  nest(data = -city_state) %>%
+  mutate(models = map(data, \(df)glm(solved ~ victim_age + victim_race + victim_sex,family = binomial(), data = df)),
+         results = map(models, \(mod)broom::tidy(mod, conf.int = TRUE))) %>%
+  select(-models, -data) %>%
+  unnest(results)
 ```
 
 ```{r}
-results = nested %>%
-  mutate(tidy_fit = map(fit, broom::tidy, conf.int = TRUE, exponentiate = TRUE)) %>%
-  unnest(tidy_fit) %>%
-  filter(term == "victim_sex.Male") %>%
-  select(
-    city_state,
-    OR = estimate,
-    conf.low,
-    conf.high)
-results
+fit_logistic2 = 
+  fit_logistic %>% 
+  filter(str_detect(term, "Male")) %>%
+  group_by(city_state) %>%
+  mutate(OR = exp(estimate),
+         OR_lower = exp(conf.low),
+         OR_higher = exp(conf.high)) %>%
+  select(city_state, OR, OR_lower, OR_higher)
+
+fit_logistic2 %>%
+  knitr::kable()
 ```
+
+```{r}
+fit_logistic_plot = fit_logistic2 %>%
+  ggplot(aes(x = fct_reorder(city_state, OR, .desc = TRUE),
+             y = OR,
+             ymin = OR_lower,
+             ymax = OR_higher,
+             color = ifelse(OR > 1, "OR > 1", "OR < 1"))) +
+  geom_errorbar(width = 0.3,
+                linewidth = 0.8,
+                alpha = 0.5) +
+  geom_point() +
+  coord_flip() +
+  labs(
+    x = "City",
+    y = "Odds Ratio (OR)",
+    title = "Odds of Homicide Case Resolution by Victim Sex (Male vs. Female)",
+    color = "Effect Direction"
+  )
+fit_logistic_plot
+```
+
+**The ranking reveals that most U.S. cities have lower homicide resolution rates for male victims, though the magnitude is modest in many places. Only a few cities show higher resolution rates for male victims. The plot efficiently highlights geographic variability in sex-related disparities in homicide case resolution.**
 
 # Problem 2
 ```{r}
@@ -191,6 +214,7 @@ bw_df_plot = bw_df %>%
   add_residuals(model_bw) %>%
   ggplot(aes(x = pred, y = resid)) +
   geom_point(alpha = 0.3) +
+  geom_smooth(se = FALSE, color = "red") +
   labs(
     title = "Residuals vs Fitted Values",
     x = "Fitted values (predicted birthweight)",
