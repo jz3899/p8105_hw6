@@ -9,6 +9,9 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(broom)
+library(ggridges)
+library(ggplot2)
+library(modelr)
 set.seed(1)
 knitr::opts_chunk$set(
   fig.width = 9,
@@ -32,7 +35,6 @@ scale_fill_discrete = scale_fill_viridis_d
 homi_df = 
   read.csv("./homicide-data.csv",na = c("NA", ".", "")) %>%
   janitor::clean_names()
-homi_df
 ```
 
 ```{r}
@@ -53,7 +55,6 @@ dis_df %>%
 ```{r}
 baltimore = dis_df %>%
   filter(city_state == "Baltimore,MD")
-baltimore
 ```
 
 ```{r}
@@ -157,3 +158,95 @@ quantile(boot_df$r2, c(0.025, 0.975))
 quantile(boot_df$beta_product, c(0.025, 0.975))
 ```
 
+**The 95% confidence interval for r^2 is (0.9343,0.9466). The 95% confidence interval for beta1/beta2 is (-0.0092,-0.0037)**
+
+# Problem 3
+```{r}
+bw_df = 
+  read.csv("./birthweight.csv",na = c("NA", ".", "")) %>%
+  janitor::clean_names() %>%
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2), labels = c("male", "female")),
+    frace = factor(frace, levels = c(1,2,3,4,8,9),
+                   labels = c("white","black","asian","puerto_rican","other","unknown")),
+    mrace = factor(mrace, levels = c(1,2,3,4,8),
+                   labels = c("white","black","asian","puerto_rican","other")),
+    malform = factor(malform, levels = c(0, 1), labels = c("absent", "present")),
+    parity = as.integer(parity)
+  )
+```
+
+```{r}
+model_bw = lm(
+  bwt ~ bhead + blength + gaweeks + ppbmi + mheight + momage + smoken,
+  data = bw_df
+)
+model_bw
+summary(model_bw)
+```
+
+```{r}
+bw_df_plot = bw_df %>%
+  add_predictions(model_bw) %>%
+  add_residuals(model_bw) %>%
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.3) +
+  labs(
+    title = "Residuals vs Fitted Values",
+    x = "Fitted values (predicted birthweight)",
+    y = "Residuals"
+  )
+bw_df_plot
+```
+
+**To develop a regression model for birthweight, I used a combination of subject-matter reasoning and data-driven exploration. In this way my model is: bw=β0+β1bhead+β2blength+β3gaweeks+β4ppbmi+β5mheight+β6momage+β7smoken+ε. According to the plot, residuals are centered around zero across the fitted-value range, indicating no major structural bias. There is no strong curvature, suggesting the linearity assumption is reasonable. The spread of residuals increases somewhat at higher fitted values, which is common in birthweight data and indicates mild heteroscedasticity. There are also some outliers, but they do not dominate the model.**
+
+```{r}
+cv_df = crossv_mc(bw_df, 100) %>%
+  mutate(
+    train = map(train, as_tibble),
+    test  = map(test,  as_tibble)
+  )
+
+cv_df = cv_df %>%
+  mutate(
+    mod1 = map(train, ~ lm(bwt ~ bhead + blength + gaweeks + ppbmi +
+                             mheight + momage + smoken,
+                           data = .x)),
+    mod2 = map(train, ~ lm(bwt ~ blength + gaweeks, data = .x)),
+    mod3 = map(train, ~ lm(bwt ~ bhead * blength * babysex, data = .x))
+  ) %>%
+  mutate(
+    rmse1 = map2_dbl(mod1, test,  ~ rmse(.x, .y)),
+    rmse2 = map2_dbl(mod2, test,  ~ rmse(.x, .y)),
+    rmse3 = map2_dbl(mod3, test,  ~ rmse(.x, .y))
+  )
+
+cv_summary = cv_df %>%
+  summarise(
+    mean_rmse1 = mean(rmse1),  sd_rmse1 = sd(rmse1),
+    mean_rmse2 = mean(rmse2),  sd_rmse2 = sd(rmse2),
+    mean_rmse3 = mean(rmse3),  sd_rmse3 = sd(rmse3)
+  )
+
+print(cv_summary)
+
+cv_df %>%
+  select(rmse1, rmse2, rmse3) %>%
+  pivot_longer(everything(),
+               names_to = "model",
+               values_to = "rmse",
+               names_prefix = "rmse") %>%
+  mutate(model = case_when(
+    model == "1" ~ "Model1_proposed",
+    model == "2" ~ "Model2_length+gaweeks",
+    model == "3" ~ "Model3_interaction"
+  )) %>%
+  ggplot(aes(x = model, y = rmse)) +
+    geom_violin(trim = TRUE) +
+    geom_boxplot(width = 0.1) +
+    labs(title = "Cross-Validated RMSE (100 Monte Carlo splits)",
+         y = "RMSE (g)", x = "Model")
+```
+
+**According to the plot, Model 1 has the best predictive performance, with the lowest and most stable RMSE across 100 cross-validated splits. Model 3 performs reasonably but is not better than the simpler Model 1. Model 2 clearly underperforms, confirming that length and gestational age alone are insufficient predictors.**
